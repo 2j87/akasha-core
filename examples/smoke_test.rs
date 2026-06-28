@@ -26,12 +26,14 @@ fn main() {
     let t_input_tokens = Arc::new(Tensor::init_from_cpu(ctx.clone(), &tokens_cpu));
 
     println!("Akasha going to vram...");
+    let num_heads = 16;
     let model = AkashaModel::new(
         ctx.clone(),
         vocab_size,
         dim,
         seq_len,
         num_layers,
+        num_heads,
         &t_input_tokens,
     );
 

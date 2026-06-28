@@ -76,6 +76,21 @@ impl Linear {
         let shader_bwd_in = BuiltInShader::MatMulTrp.get_def(); // Input Trp B
         let mut backward_graph = ComputeGraph::new(ctx.clone());
 
+        // grad_input = grad_output[M,out_features] @ weight^T. MatMulTrp's
+        // convention is C[M,N] = A[M,K] @ B^T where B is stored as [N,K].
+        // `weight` is physically stored [in_features,out_features] (its
+        // forward-pass [K,N] role), which is exactly [N,K] for *this* call
+        // with N=in_features, K=out_features -- the opposite labeling from
+        // the forward/grad_weight meta (which has N=out_features,
+        // K=in_features). Reusing `t_meta` here swaps N/K and silently
+        // computes the wrong matrix (confirmed via a CUDA-vs-Vulkan A/B: both
+        // backends "faithfully" mis-execute the swapped meta, but via
+        // different mechanics -- cuBLAS's column-major reinterpretation vs
+        // WGSL's direct strided indexing -- producing different wrong
+        // results instead of merely matching wrong results).
+        let meta_grad_in_data = vec![m, in_features, out_features];
+        let t_meta_grad_in = Arc::new(Tensor::init_from_cpu(ctx.clone(), &meta_grad_in_data));
+
         backward_graph.add_node(
             &shader_bwd_w,
             &[
@@ -123,7 +138,7 @@ impl Linear {
                 },
                 TensorBind {
                     binding: 3,
-                    tensor: &t_meta,
+                    tensor: &t_meta_grad_in,
                     mode: TensorMode::Meta,
                 },
             ],

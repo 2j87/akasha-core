@@ -13,6 +13,7 @@ const VOCAB_SIZE: u32 = NUM_WORDS + 1;
 
 const DIM: u32 = 128;
 const NUM_LAYERS: usize = 2;
+const NUM_HEADS: u32 = 4;
 const BATCH_SIZE: usize = 40;
 const ROLLING_WINDOW: usize = 50;
 const DEFAULT_WEIGHTS_FILE: &str = "akasha.bin";
@@ -237,6 +238,7 @@ fn main() {
         DIM,
         NUM_WORDS,
         NUM_LAYERS,
+        NUM_HEADS,
         &t_input_tokens,
     );
 

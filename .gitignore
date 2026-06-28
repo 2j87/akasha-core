@@ -1,2 +1,6 @@
 /target
 akasha.bin
+*.bin
+/data
+/checkpoints
+training.log

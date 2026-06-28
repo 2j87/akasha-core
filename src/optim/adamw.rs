@@ -12,6 +12,7 @@ const DEFAULT_EPS: Real = 1e-8;
 #[derive(Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
 struct ParamMeta {
     size: u32,
+    groups_x: u32,
 }
 
 #[repr(C)]
@@ -66,9 +67,19 @@ impl AdamW {
             let zeros = vec![0.0 as Real; len];
             let m = Arc::new(Tensor::init_from_cpu(ctx.clone(), &zeros));
             let v = Arc::new(Tensor::init_from_cpu(ctx.clone(), &zeros));
+
+            // Vulkan caps each dispatch dimension at 65535 workgroups. Large
+            // tensors (e.g. the 50257x768 embedding/lm_head, ~150772
+            // workgroups of 256 threads) exceed that in a 1D dispatch, so
+            // spread across a 2D grid instead -- groups_x stays comfortably
+            // under the cap, groups_y absorbs the rest.
+            let total_groups = (((len as u32) + 255) / 256).max(1);
+            let groups_x = total_groups.min(8192);
+            let groups_y = (total_groups + groups_x - 1) / groups_x;
+
             let param_meta = Arc::new(Tensor::init_from_cpu(
                 ctx.clone(),
-                &[ParamMeta { size: len as u32 }],
+                &[ParamMeta { size: len as u32, groups_x }],
             ));
 
             graph.add_node(
@@ -105,7 +116,7 @@ impl AdamW {
                         mode: TensorMode::Meta,
                     },
                 ],
-                [((len as u32) + 255) / 256, 1, 1],
+                [groups_x, groups_y, 1],
             );
 
             moments.push((m, v));

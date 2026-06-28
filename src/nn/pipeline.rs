@@ -94,6 +94,7 @@ impl TransformerBlock {
         ctx: Arc<WgpuContext>,
         dim: u32,
         seq_len: u32,
+        num_heads: u32,
         input_tensor: &Arc<Tensor>,
         grad_output: &Arc<Tensor>,
         grad_input: &Arc<Tensor>,
@@ -172,7 +173,8 @@ impl TransformerBlock {
             &g_vproj_in,
         );
 
-        let rope_meta_data = vec![seq_len, dim, dim];
+        let head_dim = dim / num_heads;
+        let rope_meta_data = vec![seq_len, dim, head_dim];
         let t_meta_rope = Arc::new(Tensor::init_from_cpu(ctx.clone(), &rope_meta_data));
 
         let mut rope_forward = ComputeGraph::new(ctx.clone());
@@ -197,6 +199,7 @@ impl TransformerBlock {
             ctx.clone(),
             seq_len,
             dim,
+            num_heads,
             &q_proj.out_buffer,
             &k_proj.out_buffer,
             &v_proj.out_buffer,

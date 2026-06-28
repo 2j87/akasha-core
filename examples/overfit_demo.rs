@@ -113,12 +113,14 @@ fn main() {
 
     let t_input_tokens = Arc::new(Tensor::init_from_cpu(ctx.clone(), &sentence_tokens));
 
+    let num_heads = 4;
     let model = AkashaModel::new(
         ctx.clone(),
         vocab_size,
         dim,
         seq_len,
         num_layers,
+        num_heads,
         &t_input_tokens,
     );
 

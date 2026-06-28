@@ -16,9 +16,27 @@ use super::rmsnorm::RMSNorm;
 use super::traits::Layer;
 use crate::optim::AdamW;
 
+use crate::config::{ADAM_WEIGHT_DECAY, GRAD_CLIP_NORM};
+
 const ADAM_BETA1: Real = 0.9;
 const ADAM_BETA2: Real = 0.95;
-const ADAM_WEIGHT_DECAY: Real = 0.0;
+
+fn sample_token(logits: &[Real], temperature: f32) -> u32 {
+    let scaled: Vec<f64> = logits.iter().map(|&x| (x as f64) / temperature as f64).collect();
+    let max = scaled.iter().cloned().fold(f64::NEG_INFINITY, f64::max);
+    let exps: Vec<f64> = scaled.iter().map(|&x| (x - max).exp()).collect();
+    let sum: f64 = exps.iter().sum();
+    let probs: Vec<f64> = exps.iter().map(|&x| x / sum).collect();
+
+    let mut r: f64 = rand::random();
+    for (i, &p) in probs.iter().enumerate() {
+        if r < p {
+            return i as u32;
+        }
+        r -= p;
+    }
+    (probs.len() - 1) as u32
+}
 
 fn zero_tensor(t: &Tensor) {
     let len = (t.size / std::mem::size_of::<Real>() as u64) as usize;
@@ -74,6 +92,8 @@ fn collect_trainable_params(
 
 pub struct AkashaModel {
     pub ctx: Arc<WgpuContext>,
+    pub vocab_size: u32,
+    pub seq_len: u32,
     pub input_tokens: Arc<Tensor>,
     pub embedding: Embedding,
     pub layers: Vec<TransformerBlock>,
@@ -140,6 +160,7 @@ impl AkashaModel {
         }
 
         if is_last_in_cycle {
+            self.clip_grad_norm(GRAD_CLIP_NORM);
             self.optimizer
                 .step(lr, ADAM_BETA1, ADAM_BETA2, ADAM_WEIGHT_DECAY);
         }
@@ -148,6 +169,27 @@ impl AkashaModel {
             Some(total_loss / batch_size as Real)
         } else {
             None
+        }
+    }
+
+    /// Clips the global L2 norm across all parameter gradients to `max_norm`,
+    /// matching the standard pre-optimizer-step clipping used in GPT-style training.
+    pub fn clip_grad_norm(&self, max_norm: f32) {
+        let params = self.trainable_params();
+        let grads: Vec<Vec<Real>> = params.iter().map(|(_, grad)| grad.to_cpu()).collect();
+
+        let total_sq: f64 = grads
+            .iter()
+            .map(|g| g.iter().map(|&x| (x as f64) * (x as f64)).sum::<f64>())
+            .sum();
+        let total_norm = total_sq.sqrt() as f32;
+
+        if total_norm > max_norm {
+            let scale = max_norm / (total_norm + 1e-6);
+            for ((_, grad_tensor), grad_data) in params.iter().zip(grads.iter()) {
+                let scaled: Vec<Real> = grad_data.iter().map(|&x| x * scale).collect();
+                grad_tensor.copy_from_cpu(&scaled);
+            }
         }
     }
 
@@ -166,6 +208,7 @@ impl AkashaModel {
         dim: u32,
         seq_len: u32,
         num_layers: usize,
+        num_heads: u32,
         input_tokens: &Arc<Tensor>,
     ) -> Self {
         assert!(num_layers >= 1, "At least one layer is required!");
@@ -203,6 +246,7 @@ impl AkashaModel {
                 ctx.clone(),
                 dim,
                 seq_len,
+                num_heads,
                 &current_input,
                 &edges[i + 1],
                 &edges[i],
@@ -283,6 +327,8 @@ impl AkashaModel {
 
         Self {
             ctx,
+            vocab_size,
+            seq_len,
             input_tokens: input_tokens.clone(),
             embedding,
             layers,
@@ -335,6 +381,51 @@ impl AkashaModel {
         for layer in self.layers.iter() {
             layer.zero_transient_grads();
         }
+    }
+
+    /// Greedy/temperature-sampled autoregressive generation. The model's input
+    /// buffer is a fixed `seq_len`-wide window; causal masking means padding
+    /// tokens placed after the real content never influence earlier logits, so
+    /// we always run a full-width forward pass and read the logits at the last
+    /// real position (sliding the window once the prompt+generation exceeds seq_len).
+    pub fn generate(
+        &self,
+        tokenizer: &crate::tokenizer::AkashaTokenizer,
+        prompt_tokens: &[u32],
+        max_new_tokens: usize,
+        temperature: f32,
+    ) -> String {
+        let seq_len = self.seq_len as usize;
+        let vocab_size = self.vocab_size as usize;
+        let mut tokens = prompt_tokens.to_vec();
+        const EOS: u32 = 50256;
+
+        for _ in 0..max_new_tokens {
+            let cur_len = tokens.len();
+            let (start, pred_pos) = if cur_len >= seq_len {
+                (cur_len - seq_len, seq_len - 1)
+            } else {
+                (0, cur_len - 1)
+            };
+
+            let mut window = vec![0u32; seq_len];
+            let slice = &tokens[start..];
+            window[..slice.len()].copy_from_slice(slice);
+
+            self.input_tokens.copy_from_cpu(&window);
+            self.forward_fused();
+
+            let logits = self.lm_head.out_buffer.to_cpu();
+            let row = &logits[pred_pos * vocab_size..(pred_pos + 1) * vocab_size];
+            let next = sample_token(row, temperature);
+            tokens.push(next);
+
+            if next == EOS {
+                break;
+            }
+        }
+
+        tokenizer.decode(&tokens[prompt_tokens.len()..])
     }
 
     pub fn save_weights(&self, path: &str) -> bincode::Result<()> {
