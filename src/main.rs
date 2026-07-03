@@ -144,6 +144,24 @@ fn run_training() {
         }
     };
 
+    if start_step >= MAX_STEPS {
+        // Training already reached MAX_STEPS in a prior run (model_final.bin
+        // exists and is recognized as the latest checkpoint). Without this
+        // guard, `for step in start_step..MAX_STEPS` is an empty range, the
+        // loop body (and therefore every loss update) never runs, and the
+        // code below unconditionally re-saves model_final.bin and prints
+        // "Best loss: f32::MAX" -- then train.bat's wrapper loop restarts
+        // the process immediately, which repeats this instantly forever
+        // (observed as a multi-second burst of hundreds of "Starting/
+        // resuming" log lines with no actual training happening).
+        println!(
+            "Training already complete: resumed step {} >= MAX_STEPS {}. Nothing to do.",
+            start_step, MAX_STEPS
+        );
+        println!("Increase MAX_STEPS in config.rs to continue training further.");
+        return;
+    }
+
     let mut rng = rand::thread_rng();
     let mut best_loss = f32::MAX;
     // Raw per-step loss is extremely noisy (BATCH_SIZE=2 -> ~1024 tokens per

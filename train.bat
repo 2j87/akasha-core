@@ -11,5 +11,10 @@ rem workload, so switching back to CUDA for real training.
 echo [%date% %time%] Starting/resuming training... >> training.log
 cargo run --release --features cuda --bin akasha-core >> training.log 2>&1
 echo [%date% %time%] Process exited -- restarting in 10 seconds... >> training.log
-timeout /t 10
+rem `timeout` requires an interactive console and fails instantly (no actual
+rem delay) when this script runs detached/hidden with redirected output --
+rem observed as hundreds of restart-loop iterations per second instead of a
+rem real 10s pause. `ping` to localhost with a packet count is the standard
+rem batch-script delay that works in any context.
+ping -n 11 127.0.0.1 >nul
 goto loop
